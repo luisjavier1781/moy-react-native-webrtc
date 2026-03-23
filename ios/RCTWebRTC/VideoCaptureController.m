@@ -351,6 +351,182 @@
     };
 }
 
+// -------------------------------------------------------------------------
+// Exposure API
+// -------------------------------------------------------------------------
+
+- (NSString *)setExposure:(float)bias {
+    if (!self.running || !self.device) {
+        return @"setExposure: capture not running";
+    }
+    if (![self.device isExposureModeSupported:AVCaptureExposureModeCustom] &&
+        ![self.device isExposureModeSupported:AVCaptureExposureModeContinuousAutoExposure]) {
+        return @"setExposure: device does not support exposure control";
+    }
+
+    float minBias = self.device.minExposureTargetBias;
+    float maxBias = self.device.maxExposureTargetBias;
+    float clamped = MAX(minBias, MIN(bias, maxBias));
+
+    NSError *error = nil;
+    [self.device lockForConfiguration:&error];
+    if (error) {
+        return [NSString stringWithFormat:@"setExposure: could not lock device: %@", error.localizedDescription];
+    }
+
+    [self.device setExposureTargetBias:clamped completionHandler:nil];
+    [self.device unlockForConfiguration];
+
+    RCTLog(@"[VideoCaptureController] setExposure: %.2f (clamped from %.2f)", clamped, bias);
+    return nil;
+}
+
+// -------------------------------------------------------------------------
+// White Balance API
+// -------------------------------------------------------------------------
+
+- (NSString *)setWhiteBalance:(NSString *)mode {
+    if (!self.running || !self.device) {
+        return @"setWhiteBalance: capture not running";
+    }
+
+    AVCaptureWhiteBalanceMode avMode;
+    BOOL isLocked = NO;
+    AVCaptureWhiteBalanceGains gains;
+
+    if ([mode isEqualToString:@"auto"]) {
+        avMode = AVCaptureWhiteBalanceModeContinuousAutoWhiteBalance;
+    } else {
+        avMode = AVCaptureWhiteBalanceModeLocked;
+        isLocked = YES;
+
+        // Map string to approximate Kelvin temperature, then convert to gains
+        float temperature;
+        if ([mode isEqualToString:@"daylight"])      temperature = 5500.0f;
+        else if ([mode isEqualToString:@"cloudy"])   temperature = 6500.0f;
+        else if ([mode isEqualToString:@"shade"])    temperature = 7500.0f;
+        else if ([mode isEqualToString:@"fluorescent"]) temperature = 4000.0f;
+        else if ([mode isEqualToString:@"incandescent"]) temperature = 3000.0f;
+        else {
+            return [NSString stringWithFormat:@"setWhiteBalance: unknown mode '%@'", mode];
+        }
+
+        if (![self.device isWhiteBalanceModeSupported:AVCaptureWhiteBalanceModeLocked]) {
+            return @"setWhiteBalance: locked WB not supported on this device";
+        }
+
+        AVCaptureWhiteBalanceTemperatureAndTintValues ttv;
+        ttv.temperature = temperature;
+        ttv.tint = 0.0f;
+        gains = [self.device deviceWhiteBalanceGainsForTemperatureAndTintValues:ttv];
+        // Clamp gains to device limits
+        float maxGain = self.device.maxWhiteBalanceGain;
+        gains.redGain   = MAX(1.0f, MIN(gains.redGain,   maxGain));
+        gains.greenGain = MAX(1.0f, MIN(gains.greenGain, maxGain));
+        gains.blueGain  = MAX(1.0f, MIN(gains.blueGain,  maxGain));
+    }
+
+    if (![self.device isWhiteBalanceModeSupported:avMode]) {
+        return [NSString stringWithFormat:@"setWhiteBalance: mode %@ not supported", mode];
+    }
+
+    NSError *error = nil;
+    [self.device lockForConfiguration:&error];
+    if (error) {
+        return [NSString stringWithFormat:@"setWhiteBalance: could not lock device: %@", error.localizedDescription];
+    }
+
+    self.device.whiteBalanceMode = avMode;
+    if (isLocked) {
+        [self.device setWhiteBalanceModeLockedWithDeviceWhiteBalanceGains:gains completionHandler:nil];
+    }
+    [self.device unlockForConfiguration];
+
+    RCTLog(@"[VideoCaptureController] setWhiteBalance: %@", mode);
+    return nil;
+}
+
+// -------------------------------------------------------------------------
+// Stabilization API
+// -------------------------------------------------------------------------
+
+- (NSString *)setStabilization:(BOOL)enabled {
+    if (!self.running) {
+        return @"setStabilization: capture not running";
+    }
+
+    AVCaptureSession *session = self.capturer.captureSession;
+    if (!session) {
+        return @"setStabilization: no capture session";
+    }
+
+    BOOL applied = NO;
+    for (AVCaptureConnection *connection in session.connections) {
+        if (connection.isVideoStabilizationSupported) {
+            connection.preferredVideoStabilizationMode =
+                enabled ? AVCaptureVideoStabilizationModeAuto : AVCaptureVideoStabilizationModeOff;
+            applied = YES;
+        }
+    }
+
+    if (!applied) {
+        return @"setStabilization: video stabilization not supported on any connection";
+    }
+
+    RCTLog(@"[VideoCaptureController] setStabilization: %@", enabled ? @"ON" : @"OFF");
+    return nil;
+}
+
+// -------------------------------------------------------------------------
+// Capabilities API
+// -------------------------------------------------------------------------
+
+- (NSDictionary *)getCameraCapabilities {
+    if (!self.device) {
+        // Return safe defaults
+        return @{
+            @"exposureMin": @(-2.0),
+            @"exposureMax": @(2.0),
+            @"wbModes": @[@"auto"],
+            @"hasStabilization": @(NO)
+        };
+    }
+
+    float exposureMin = self.device.minExposureTargetBias;
+    float exposureMax = self.device.maxExposureTargetBias;
+
+    // Build supported WB modes list
+    NSMutableArray<NSString *> *wbModes = [NSMutableArray array];
+    [wbModes addObject:@"auto"]; // always supported
+    if ([self.device isWhiteBalanceModeSupported:AVCaptureWhiteBalanceModeLocked]) {
+        // If locked WB is available, all temperature presets are available
+        [wbModes addObject:@"daylight"];
+        [wbModes addObject:@"cloudy"];
+        [wbModes addObject:@"shade"];
+        [wbModes addObject:@"fluorescent"];
+        [wbModes addObject:@"incandescent"];
+    }
+
+    // Check stabilization support via capture session connections
+    BOOL hasStabilization = NO;
+    AVCaptureSession *session = self.capturer.captureSession;
+    if (session) {
+        for (AVCaptureConnection *connection in session.connections) {
+            if (connection.isVideoStabilizationSupported) {
+                hasStabilization = YES;
+                break;
+            }
+        }
+    }
+
+    return @{
+        @"exposureMin": @(exposureMin),
+        @"exposureMax": @(exposureMax),
+        @"wbModes": wbModes,
+        @"hasStabilization": @(hasStabilization)
+    };
+}
+
 @end
 
 #endif

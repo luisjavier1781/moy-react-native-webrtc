@@ -530,6 +530,94 @@ RCT_EXPORT_METHOD(mediaStreamTrackGetZoomRange : (nonnull NSString *)trackID : (
 #endif
 }
 
+RCT_EXPORT_METHOD(mediaStreamTrackSetExposure : (nonnull NSString *)trackID : (double)bias : (RCTPromiseResolveBlock)resolve : (RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_TV
+    reject(@"unsupported_platform", @"tvOS is not supported", nil);
+    return;
+#else
+    RTCMediaStreamTrack *track = self.localTracks[trackID];
+    if (track && [track.kind isEqualToString:@"video"]) {
+        RTCVideoTrack *videoTrack = (RTCVideoTrack *)track;
+        if ([videoTrack.captureController isKindOfClass:[VideoCaptureController class]]) {
+            VideoCaptureController *vcc = (VideoCaptureController *)videoTrack.captureController;
+            NSString *err = [vcc setExposure:(float)bias];
+            resolve(err);
+        } else {
+            reject(@"E_INVALID", @"Track does not use VideoCaptureController", nil);
+        }
+    } else {
+        reject(@"E_INVALID", @"Track not found or not a video track", nil);
+    }
+#endif
+}
+
+RCT_EXPORT_METHOD(mediaStreamTrackSetWhiteBalance : (nonnull NSString *)trackID : (nonnull NSString *)mode : (RCTPromiseResolveBlock)resolve : (RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_TV
+    reject(@"unsupported_platform", @"tvOS is not supported", nil);
+    return;
+#else
+    RTCMediaStreamTrack *track = self.localTracks[trackID];
+    if (track && [track.kind isEqualToString:@"video"]) {
+        RTCVideoTrack *videoTrack = (RTCVideoTrack *)track;
+        if ([videoTrack.captureController isKindOfClass:[VideoCaptureController class]]) {
+            VideoCaptureController *vcc = (VideoCaptureController *)videoTrack.captureController;
+            NSString *err = [vcc setWhiteBalance:mode];
+            resolve(err);
+        } else {
+            reject(@"E_INVALID", @"Track does not use VideoCaptureController", nil);
+        }
+    } else {
+        reject(@"E_INVALID", @"Track not found or not a video track", nil);
+    }
+#endif
+}
+
+RCT_EXPORT_METHOD(mediaStreamTrackSetStabilization : (nonnull NSString *)trackID : (BOOL)enabled : (RCTPromiseResolveBlock)resolve : (RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_TV
+    reject(@"unsupported_platform", @"tvOS is not supported", nil);
+    return;
+#else
+    RTCMediaStreamTrack *track = self.localTracks[trackID];
+    if (track && [track.kind isEqualToString:@"video"]) {
+        RTCVideoTrack *videoTrack = (RTCVideoTrack *)track;
+        if ([videoTrack.captureController isKindOfClass:[VideoCaptureController class]]) {
+            VideoCaptureController *vcc = (VideoCaptureController *)videoTrack.captureController;
+            NSString *err = [vcc setStabilization:enabled];
+            resolve(err);
+        } else {
+            reject(@"E_INVALID", @"Track does not use VideoCaptureController", nil);
+        }
+    } else {
+        reject(@"E_INVALID", @"Track not found or not a video track", nil);
+    }
+#endif
+}
+
+RCT_EXPORT_METHOD(mediaStreamTrackGetCameraCapabilities : (nonnull NSString *)trackID : (RCTPromiseResolveBlock)resolve : (RCTPromiseRejectBlock)reject) {
+#if TARGET_OS_TV
+    reject(@"unsupported_platform", @"tvOS is not supported", nil);
+    return;
+#else
+    RTCMediaStreamTrack *track = self.localTracks[trackID];
+    if (track && [track.kind isEqualToString:@"video"]) {
+        RTCVideoTrack *videoTrack = (RTCVideoTrack *)track;
+        if ([videoTrack.captureController isKindOfClass:[VideoCaptureController class]]) {
+            VideoCaptureController *vcc = (VideoCaptureController *)videoTrack.captureController;
+            resolve([vcc getCameraCapabilities]);
+        } else {
+            resolve(@{
+                @"exposureMin": @(-2.0),
+                @"exposureMax": @(2.0),
+                @"wbModes": @[@"auto"],
+                @"hasStabilization": @(NO)
+            });
+        }
+    } else {
+        reject(@"E_INVALID", @"Track not found or not a video track", nil);
+    }
+#endif
+}
+
 #pragma mark - Helpers
 
 - (RTCMediaStreamTrack *)trackForId:(nonnull NSString *)trackId pcId:(nonnull NSNumber *)pcId {

@@ -23,5 +23,17 @@
 /** Returns {"min": minZoom, "max": maxZoom} for the active capture device. */
 - (NSDictionary *)getZoomRange;
 
+/** Sets the exposure compensation bias (in EV stops). Returns nil on success or an error string. */
+- (NSString *)setExposure:(float)bias;
+
+/** Sets the white balance mode. Accepts "auto", "daylight", "cloudy", "fluorescent", "incandescent", "shade". */
+- (NSString *)setWhiteBalance:(NSString *)mode;
+
+/** Enables or disables video stabilization on the capture connection. */
+- (NSString *)setStabilization:(BOOL)enabled;
+
+/** Returns camera capabilities: exposureMin, exposureMax, wbModes, hasStabilization. */
+- (NSDictionary *)getCameraCapabilities;
+
 @end
 #endif

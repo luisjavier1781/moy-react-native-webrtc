@@ -8,6 +8,7 @@ import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CaptureRequest;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.util.Log;
 import android.util.Range;
 
@@ -44,8 +45,25 @@ public class CameraCaptureController extends AbstractVideoCaptureController {
     private final CameraEnumerator cameraEnumerator;
     private ReadableMap constraints;
 
-    /** True once ZoomAwareCaptureSession has been installed for the current camera session. */
-    private boolean wrapperInstalled = false;
+    /** Handler thread for periodic zoom re-application. */
+    @Nullable
+    private HandlerThread zoomHandlerThread;
+    @Nullable
+    private Handler zoomHandler;
+    /** Runnable that periodically re-sends a zoom request to the camera. */
+    private final Runnable zoomKeepaliveRunnable = new Runnable() {
+        @Override
+        public void run() {
+            float zoom = zoomController.getCurrentZoom();
+            if (zoom > 1.0f) {
+                applyZoomDirect(zoom);
+                if (zoomHandler != null) {
+                    zoomHandler.postDelayed(this, 600);
+                }
+            }
+            // If zoom == 1.0 the loop stops; it will be restarted by setZoom() if needed
+        }
+    };
 
     private final CameraEventsHandler cameraEventsHandler = new CameraEventsHandler() {
         @Override
@@ -55,8 +73,6 @@ public class CameraCaptureController extends AbstractVideoCaptureController {
             updateActualSize(cameraIndex, cameraName, videoCapturer);
             CameraCaptureController.this.currentDeviceId = cameraIndex == -1 ? null : String.valueOf(cameraIndex);
             CameraCaptureController.this.zoomController.onCameraChanged(cameraName);
-            // New camera session — wrapper must be reinstalled
-            CameraCaptureController.this.wrapperInstalled = false;
         }
     };
 
@@ -318,12 +334,10 @@ public class CameraCaptureController extends AbstractVideoCaptureController {
      * could not be applied (so the caller can surface it to JS debug panel).
      *
      * Strategy:
-     * - First call: installs ZoomAwareCaptureSession as a wrapper around
-     *   Camera2Session's internal captureSession. This intercepts ALL future
-     *   setRepeatingRequest() calls from WebRTC and auto-injects zoom, so zoom
-     *   persists across WebRTC's internal stats polling loop.
-     * - Subsequent calls: just update zoomController (wrapper auto-applies).
-     * - Falls back to changeCaptureFormat() if reflection fails entirely.
+     * - Immediately applies zoom via a direct setRepeatingRequest call.
+     * - If zoom > 1.0: starts a keepalive loop (every 600ms) to re-apply zoom,
+     *   because WebRTC's internal stats polling resets zoom every ~1 second.
+     * - If zoom == 1.0: stops the keepalive loop.
      */
     public String setZoom(float zoomRatio) {
         if (!(videoCapturer instanceof Camera2Capturer)) {
@@ -335,23 +349,49 @@ public class CameraCaptureController extends AbstractVideoCaptureController {
         float clamped = zoomController.setZoom(zoomRatio);
         Log.d(TAG, "setZoom clamped=" + clamped);
 
-        String diagnostic = tryInstallWrapperAndApplyZoom(clamped);
+        String diagnostic = applyZoomDirect(clamped);
         if (diagnostic != null) {
             Log.e(TAG, "!!!ZOOM_FAIL!!! " + diagnostic);
-            System.err.println("!!!ZOOM_FAIL!!! " + diagnostic);
-            // Do NOT call changeCaptureFormat — it restarts the camera and kills the session
             return diagnostic;
         }
+
+        if (clamped > 1.0f) {
+            startZoomKeepalive();
+        } else {
+            stopZoomKeepalive();
+        }
+
         return null; // success
     }
 
+    /** Starts a periodic zoom keepalive to counteract WebRTC's stats-polling zoom reset. */
+    private void startZoomKeepalive() {
+        if (zoomHandler == null) {
+            zoomHandlerThread = new HandlerThread("ZoomKeepalive");
+            zoomHandlerThread.start();
+            zoomHandler = new Handler(zoomHandlerThread.getLooper());
+        }
+        // Remove any pending callbacks before posting a new one
+        zoomHandler.removeCallbacks(zoomKeepaliveRunnable);
+        zoomHandler.postDelayed(zoomKeepaliveRunnable, 600);
+        Log.d(TAG, "zoom: keepalive started");
+    }
+
+    /** Stops the periodic zoom keepalive. */
+    private void stopZoomKeepalive() {
+        if (zoomHandler != null) {
+            zoomHandler.removeCallbacks(zoomKeepaliveRunnable);
+        }
+        Log.d(TAG, "zoom: keepalive stopped");
+    }
+
     /**
-     * Installs ZoomAwareCaptureSession (once per camera session) and triggers
-     * one setRepeatingRequest to activate the zoom. Returns null on success or
-     * a diagnostic string on failure.
+     * Directly applies zoom by calling setRepeatingRequest on the current
+     * camera session via reflection. Returns null on success or a diagnostic
+     * string on failure.
      */
-    private String tryInstallWrapperAndApplyZoom(float zoomRatio) {
-        Log.e(TAG, ">>>tryInstallWrapper ENTER zoom=" + zoomRatio);
+    private String applyZoomDirect(float zoomRatio) {
+        Log.d(TAG, ">>>applyZoomDirect zoom=" + zoomRatio);
         try {
             // ── 1. Get Camera2Session from CameraCapturer ────────────────────
             Object stateLock = getFieldValue(videoCapturer, "stateLock");
@@ -367,9 +407,7 @@ public class CameraCaptureController extends AbstractVideoCaptureController {
                 return "REFLECT_FAIL: currentSession is null (camera not open yet?)";
             }
 
-            Log.d(TAG, "zoom: camera2Session class=" + camera2Session.getClass().getName());
-
-            // ── 2. Get the captureSession field ─────────────────────────────
+            // ── 2. Get the captureSession ────────────────────────────────────
             java.lang.reflect.Field captureSessionField =
                     findField(camera2Session.getClass(), "captureSession");
             if (captureSessionField == null) {
@@ -377,17 +415,16 @@ public class CameraCaptureController extends AbstractVideoCaptureController {
                         + camera2Session.getClass().getName();
             }
             captureSessionField.setAccessible(true);
-            CameraCaptureSession rawSession =
+            CameraCaptureSession captureSession =
                     (CameraCaptureSession) captureSessionField.get(camera2Session);
-            if (rawSession == null) {
+            if (captureSession == null) {
                 return "REFLECT_FAIL: captureSession value is null";
             }
 
-            // ── 3. Get surface for fallback use in wrapper ───────────────────
+            // ── 3. Get the surface ───────────────────────────────────────────
             android.view.Surface surface =
                     (android.view.Surface) getFieldValue(camera2Session, "surface");
             if (surface == null) {
-                // Dump field names to help diagnose
                 StringBuilder fieldNames = new StringBuilder();
                 Class<?> cls = camera2Session.getClass();
                 while (cls != null) {
@@ -401,33 +438,12 @@ public class CameraCaptureController extends AbstractVideoCaptureController {
                         + fieldNames.toString().trim();
             }
 
-            // ── 4b. Get the camera thread handler (optional, may be null) ────
+            // ── 4. Get the camera thread handler (optional) ──────────────────
             Handler cameraThreadHandler =
                     (Handler) getFieldValue(camera2Session, "cameraThreadHandler");
 
-            // ── 5. Install ZoomAwareCaptureSession wrapper (once per session) ──
-            // Keep a reference to the real (delegate) session before wrapping.
-            CameraCaptureSession delegateSession = (rawSession instanceof ZoomAwareCaptureSession)
-                    ? ((ZoomAwareCaptureSession) rawSession).getDelegate()
-                    : rawSession;
-
-            if (!wrapperInstalled || !(rawSession instanceof ZoomAwareCaptureSession)) {
-                ZoomAwareCaptureSession wrapper =
-                        new ZoomAwareCaptureSession(delegateSession, zoomController, surface);
-                captureSessionField.set(camera2Session, wrapper);
-                wrapperInstalled = true;
-                Log.d(TAG, "zoom: ZoomAwareCaptureSession installed");
-            } else {
-                Log.d(TAG, "zoom: wrapper already installed, updating zoom level only");
-            }
-
-            // ── 6. Apply zoom via setRepeatingRequest on the real delegate ────
-            // Call setRepeatingRequest on the DELEGATE directly — this avoids:
-            //  a) changeCaptureFormat which restarts the camera and destroys the wrapper
-            //  b) calling through the wrapper which would double-inject zoom
-            // The request uses TEMPLATE_RECORD + the known surface. Future WebRTC
-            // setRepeatingRequest calls flow through the wrapper automatically.
-            android.hardware.camera2.CameraDevice cameraDevice = delegateSession.getDevice();
+            // ── 5. Build a request with zoom and send it ─────────────────────
+            android.hardware.camera2.CameraDevice cameraDevice = captureSession.getDevice();
             CaptureRequest.Builder builder =
                     cameraDevice.createCaptureRequest(android.hardware.camera2.CameraDevice.TEMPLATE_RECORD);
             builder.addTarget(surface);
@@ -442,12 +458,12 @@ public class CameraCaptureController extends AbstractVideoCaptureController {
                 }
             }
 
-            delegateSession.setRepeatingRequest(builder.build(), null, cameraThreadHandler);
+            captureSession.setRepeatingRequest(builder.build(), null, cameraThreadHandler);
             Log.d(TAG, "zoom: setRepeatingRequest OK zoom=" + zoomRatio);
             return null; // success
 
         } catch (Exception e) {
-            Log.e(TAG, "zoom wrapper install failed: " + e.getMessage(), e);
+            Log.e(TAG, "applyZoomDirect failed: " + e.getMessage(), e);
             return "REFLECT_EXCEPTION: " + e.getClass().getSimpleName() + ": " + e.getMessage();
         }
     }

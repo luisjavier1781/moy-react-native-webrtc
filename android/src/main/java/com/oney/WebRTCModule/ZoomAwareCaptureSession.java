@@ -1,34 +1,24 @@
 package com.oney.WebRTCModule;
 
-import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
-import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CaptureRequest;
 import android.os.Build;
-import android.os.Handler;
 import android.util.Log;
-import android.view.Surface;
 
 import java.lang.reflect.Field;
-import java.util.List;
 
 /**
- * Wraps a real CameraCaptureSession and intercepts every setRepeatingRequest()
- * call to auto-inject the current zoom level from ZoomController.
+ * Zoom injection helper for Camera2-based capture.
  *
- * Problem it solves: WebRTC's Camera2Session calls setRepeatingRequest() roughly
- * every 1 second during stats polling, rebuilding the CaptureRequest from scratch
- * without zoom. This resets any zoom we applied via our own setRepeatingRequest.
+ * Does NOT extend CameraCaptureSession (which keeps gaining abstract methods
+ * across Android SDK versions). Instead, this class is used by
+ * CameraCaptureController to inject zoom into CaptureRequests via reflection
+ * before they are sent to the real CameraCaptureSession delegate.
  *
- * Solution: Install this wrapper once (via reflection, replacing
- * Camera2Session.captureSession) so that ALL future setRepeatingRequest calls —
- * whether from WebRTC internals or from our zoom code — automatically carry zoom.
- *
- * Zoom injection strategy: mutate the CaptureRequest's internal CameraMetadataNative
- * (mSettings field) in-place via reflection. This avoids rebuilding the request from
- * scratch (which loses WebRTC's surface targets and capture configuration).
+ * Usage: Call injectZoomIntoRequest() from within setRepeatingRequest()
+ * intercept logic in CameraCaptureController.
  */
-public class ZoomAwareCaptureSession extends CameraCaptureSession {
+public class ZoomAwareCaptureSession {
 
     private static final String TAG = "ZoomAwareCaptureSession";
 
@@ -41,33 +31,14 @@ public class ZoomAwareCaptureSession extends CameraCaptureSession {
     public ZoomAwareCaptureSession(
             CameraCaptureSession delegate,
             ZoomController zoomController,
-            Surface fallbackSurface) {
+            android.view.Surface fallbackSurface) {
         this.delegate = delegate;
         this.zoomController = zoomController;
-        // fallbackSurface kept for API compatibility but no longer used
+        // fallbackSurface kept for API compatibility but not used here
     }
 
     public CameraCaptureSession getDelegate() {
         return delegate;
-    }
-
-    // -------------------------------------------------------------------------
-    // Interception point
-    // -------------------------------------------------------------------------
-
-    @Override
-    public int setRepeatingRequest(CaptureRequest request, CaptureCallback listener, Handler handler)
-            throws CameraAccessException {
-        float zoom = zoomController.getCurrentZoom();
-        if (zoom > 1.0f) {
-            boolean injected = injectZoomIntoRequest(request, zoom);
-            if (injected) {
-                Log.d(TAG, "setRepeatingRequest: zoom injected zoom=" + zoom);
-            } else {
-                Log.w(TAG, "injectZoom failed, passing original request (zoom lost)");
-            }
-        }
-        return delegate.setRepeatingRequest(request, listener, handler);
     }
 
     // -------------------------------------------------------------------------
@@ -83,7 +54,7 @@ public class ZoomAwareCaptureSession extends CameraCaptureSession {
      *
      * Returns true if zoom was successfully injected.
      */
-    private boolean injectZoomIntoRequest(CaptureRequest request, float zoom) {
+    public boolean injectZoomIntoRequest(CaptureRequest request, float zoom) {
         try {
             Field settingsField = findFieldInHierarchy(CaptureRequest.class, "mSettings");
             if (settingsField == null) {
@@ -130,62 +101,5 @@ public class ZoomAwareCaptureSession extends CameraCaptureSession {
             }
         }
         return null;
-    }
-
-    // -------------------------------------------------------------------------
-    // Delegation — all abstract methods forwarded to delegate
-    // -------------------------------------------------------------------------
-
-    @Override
-    public CameraDevice getDevice() {
-        return delegate.getDevice();
-    }
-
-    @Override
-    public void abortCaptures() throws CameraAccessException {
-        delegate.abortCaptures();
-    }
-
-    @Override
-    public int capture(CaptureRequest request, CaptureCallback listener, Handler handler)
-            throws CameraAccessException {
-        return delegate.capture(request, listener, handler);
-    }
-
-    @Override
-    public int captureBurst(List<CaptureRequest> requests, CaptureCallback listener, Handler handler)
-            throws CameraAccessException {
-        return delegate.captureBurst(requests, listener, handler);
-    }
-
-    @Override
-    public int setRepeatingBurst(List<CaptureRequest> requests, CaptureCallback listener, Handler handler)
-            throws CameraAccessException {
-        return delegate.setRepeatingBurst(requests, listener, handler);
-    }
-
-    @Override
-    public void stopRepeating() throws CameraAccessException {
-        delegate.stopRepeating();
-    }
-
-    @Override
-    public void close() {
-        delegate.close();
-    }
-
-    @Override
-    public Surface getInputSurface() {
-        return delegate.getInputSurface();
-    }
-
-    @Override
-    public void prepare(Surface surface) throws CameraAccessException {
-        delegate.prepare(surface);
-    }
-
-    @Override
-    public boolean isReprocessable() {
-        return delegate.isReprocessable();
     }
 }

@@ -1,6 +1,40 @@
 [<img src="https://avatars.githubusercontent.com/u/42463376" alt="React Native WebRTC" style="height: 6em;" />](https://github.com/react-native-webrtc/react-native-webrtc)
 
-# React-Native-WebRTC
+# React-Native-WebRTC (MoyStream Fork)
+
+> **This is a fork of [react-native-webrtc](https://github.com/react-native-webrtc/react-native-webrtc) maintained for the MoyStream mobile app.**
+
+## Why this fork exists
+
+The official `react-native-webrtc` library does not expose camera zoom controls. This fork adds a native zoom API for both Android and iOS.
+
+### Added features
+
+**iOS** (`VideoCaptureController.m`)
+- `setZoom(factor)` — sets `AVCaptureDevice.videoZoomFactor` directly. Persists across all frames automatically since it is a device-level property.
+- `getZoomRange()` — returns `{ min, max }` from `AVCaptureDevice.minAvailableVideoZoomFactor` / `maxAvailableVideoZoomFactor`.
+
+**Android** (`CameraCaptureController.java`, `ZoomAwareCaptureSession.java`, `ZoomController.java`)
+- `setZoom(ratio)` — installs a `ZoomAwareCaptureSession` wrapper around WebRTC's internal `Camera2Session.captureSession` via reflection. The wrapper intercepts every `setRepeatingRequest()` call and injects `CONTROL_ZOOM_RATIO` (API 30+) or `SCALER_CROP_REGION` (API 24-29) into the `CaptureRequest` by mutating its internal `CameraMetadataNative` settings field. This ensures zoom persists across WebRTC's internal stats-polling loop which rebuilds capture requests every ~1 second.
+- `getZoomRange()` — reads `CONTROL_ZOOM_RATIO_RANGE` (API 30+) or `SCALER_AVAILABLE_MAX_DIGITAL_ZOOM` from `CameraCharacteristics`.
+
+### JavaScript API
+
+```typescript
+const videoTrack = localStream.getVideoTracks()[0];
+
+// Get zoom range supported by the device
+const range = await videoTrack._getZoomRange(); // { min: number, max: number }
+
+// Set zoom level (clamped to device range)
+const error = await videoTrack._setZoom(2.5); // null = success, string = error message
+```
+
+### Build note
+
+`compileSdkVersion` is capped at 34 in `android/build.gradle` to avoid compatibility issues with abstract methods added in Android SDK 36 (`CameraCaptureSession`).
+
+---
 
 [![npm version](https://img.shields.io/npm/v/react-native-webrtc)](https://www.npmjs.com/package/react-native-webrtc)
 [![npm downloads](https://img.shields.io/npm/dm/react-native-webrtc)](https://www.npmjs.com/package/react-native-webrtc)

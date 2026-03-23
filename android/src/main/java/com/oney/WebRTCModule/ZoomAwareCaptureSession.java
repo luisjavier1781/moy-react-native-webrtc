@@ -179,9 +179,13 @@ public class ZoomAwareCaptureSession extends CameraCaptureSession {
         return delegate.getInputSurface();
     }
 
-    // API 36+ added prepare(Surface) as abstract — delegate it
     @Override
     public void prepare(Surface surface) throws CameraAccessException {
         delegate.prepare(surface);
+    }
+
+    @Override
+    public boolean isReprocessable() {
+        return delegate.isReprocessable();
     }
 }

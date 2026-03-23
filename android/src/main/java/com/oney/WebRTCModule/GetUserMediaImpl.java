@@ -7,6 +7,7 @@ import android.media.projection.MediaProjectionManager;
 import android.util.DisplayMetrics;
 import android.util.Log;
 
+import androidx.annotation.Nullable;
 import androidx.core.util.Consumer;
 
 import com.facebook.react.bridge.Arguments;
@@ -559,5 +560,44 @@ class GetUserMediaImpl {
             return ((CameraCaptureController) track.videoCaptureController).getZoomRange();
         }
         return new float[]{1.0f, 1.0f};
+    }
+
+    String setExposure(String trackId, int compensation) {
+        TrackPrivate track = tracks.get(trackId);
+        if (track != null && track.videoCaptureController instanceof CameraCaptureController) {
+            return ((CameraCaptureController) track.videoCaptureController).setExposure(compensation);
+        }
+        String msg = "EXPOSURE_NO_TRACK: track not found or not Camera2: " + trackId;
+        Log.w(TAG, msg);
+        return msg;
+    }
+
+    String setWhiteBalance(String trackId, String mode) {
+        TrackPrivate track = tracks.get(trackId);
+        if (track != null && track.videoCaptureController instanceof CameraCaptureController) {
+            return ((CameraCaptureController) track.videoCaptureController).setWhiteBalance(mode);
+        }
+        String msg = "WB_NO_TRACK: track not found or not Camera2: " + trackId;
+        Log.w(TAG, msg);
+        return msg;
+    }
+
+    String setStabilization(String trackId, boolean enabled) {
+        TrackPrivate track = tracks.get(trackId);
+        if (track != null && track.videoCaptureController instanceof CameraCaptureController) {
+            return ((CameraCaptureController) track.videoCaptureController).setStabilization(enabled);
+        }
+        String msg = "STAB_NO_TRACK: track not found or not Camera2: " + trackId;
+        Log.w(TAG, msg);
+        return msg;
+    }
+
+    @Nullable
+    com.facebook.react.bridge.WritableMap getCameraCapabilities(String trackId) {
+        TrackPrivate track = tracks.get(trackId);
+        if (track != null && track.videoCaptureController instanceof CameraCaptureController) {
+            return ((CameraCaptureController) track.videoCaptureController).getCameraCapabilities();
+        }
+        return null;
     }
 }

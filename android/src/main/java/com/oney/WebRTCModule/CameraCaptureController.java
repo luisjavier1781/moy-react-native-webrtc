@@ -45,6 +45,14 @@ public class CameraCaptureController extends AbstractVideoCaptureController {
     private final CameraEnumerator cameraEnumerator;
     private ReadableMap constraints;
 
+    // ── Camera control state ──────────────────────────────────────────────────
+    /** Exposure compensation in EV steps. 0 = default. Range queried from CameraCharacteristics. */
+    private int exposureCompensation = 0;
+    /** AWB mode. Default = AUTO. Matches CaptureRequest.CONTROL_AWB_MODE_* constants. */
+    private int whiteBalanceMode = CaptureRequest.CONTROL_AWB_MODE_AUTO;
+    /** Whether video stabilization is enabled. */
+    private boolean stabilizationEnabled = false;
+
     /** Handler thread for periodic zoom re-application. */
     @Nullable
     private HandlerThread zoomHandlerThread;
@@ -329,6 +337,125 @@ public class CameraCaptureController extends AbstractVideoCaptureController {
     }
 
     /**
+     * Sets exposure compensation in EV steps (e.g. -2, -1, 0, 1, 2).
+     * The valid range is device-dependent; query it via getCameraCapabilities().
+     * Returns null on success or a diagnostic string on failure.
+     */
+    public String setExposure(int compensation) {
+        this.exposureCompensation = compensation;
+        return applyZoomDirect(zoomController.getCurrentZoom());
+    }
+
+    /**
+     * Sets the AWB (auto white balance) mode.
+     * @param mode one of: "auto", "daylight", "cloudy", "fluorescent", "incandescent", "shade"
+     * Returns null on success or a diagnostic string on failure.
+     */
+    public String setWhiteBalance(String mode) {
+        this.whiteBalanceMode = wbStringToAndroidMode(mode);
+        return applyZoomDirect(zoomController.getCurrentZoom());
+    }
+
+    /**
+     * Enables or disables digital video stabilization.
+     * Returns null on success or a diagnostic string on failure.
+     */
+    public String setStabilization(boolean enabled) {
+        this.stabilizationEnabled = enabled;
+        return applyZoomDirect(zoomController.getCurrentZoom());
+    }
+
+    /**
+     * Returns camera capabilities: exposure range, available WB modes, stabilization support.
+     * Returns null if the camera is not open or characteristics cannot be read.
+     */
+    @Nullable
+    public com.facebook.react.bridge.WritableMap getCameraCapabilities() {
+        if (zoomController == null) return null;
+        String cameraId = zoomController.getCameraId();
+        if (cameraId == null) return null;
+        try {
+            CameraManager cameraManager =
+                    (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
+            android.hardware.camera2.CameraCharacteristics chars =
+                    cameraManager.getCameraCharacteristics(cameraId);
+
+            com.facebook.react.bridge.WritableMap result =
+                    com.facebook.react.bridge.Arguments.createMap();
+
+            // Exposure compensation range
+            android.util.Range<Integer> aeRange =
+                    chars.get(android.hardware.camera2.CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+            if (aeRange != null) {
+                result.putInt("exposureMin", aeRange.getLower());
+                result.putInt("exposureMax", aeRange.getUpper());
+            } else {
+                result.putInt("exposureMin", 0);
+                result.putInt("exposureMax", 0);
+            }
+
+            // Available AWB modes → mapped to human-readable strings
+            int[] awbModes = chars.get(
+                    android.hardware.camera2.CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES);
+            com.facebook.react.bridge.WritableArray wbArray =
+                    com.facebook.react.bridge.Arguments.createArray();
+            if (awbModes != null) {
+                for (int m : awbModes) {
+                    String name = wbAndroidModeToString(m);
+                    if (name != null) wbArray.pushString(name);
+                }
+            }
+            result.putArray("wbModes", wbArray);
+
+            // Video stabilization support
+            int[] stabModes = chars.get(
+                    android.hardware.camera2.CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES);
+            boolean hasStabilization = false;
+            if (stabModes != null) {
+                for (int m : stabModes) {
+                    if (m == CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON) {
+                        hasStabilization = true;
+                        break;
+                    }
+                }
+            }
+            result.putBoolean("hasStabilization", hasStabilization);
+
+            return result;
+        } catch (Exception e) {
+            Log.e(TAG, "getCameraCapabilities failed: " + e.getMessage(), e);
+            return null;
+        }
+    }
+
+    // ── WB mode helpers ───────────────────────────────────────────────────────
+
+    private static int wbStringToAndroidMode(String mode) {
+        if (mode == null) return CaptureRequest.CONTROL_AWB_MODE_AUTO;
+        switch (mode) {
+            case "daylight":     return CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT;
+            case "cloudy":       return CaptureRequest.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT;
+            case "fluorescent":  return CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT;
+            case "incandescent": return CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT;
+            case "shade":        return CaptureRequest.CONTROL_AWB_MODE_SHADE;
+            default:             return CaptureRequest.CONTROL_AWB_MODE_AUTO;
+        }
+    }
+
+    @Nullable
+    private static String wbAndroidModeToString(int mode) {
+        switch (mode) {
+            case CaptureRequest.CONTROL_AWB_MODE_AUTO:             return "auto";
+            case CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT:         return "daylight";
+            case CaptureRequest.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT:  return "cloudy";
+            case CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT:      return "fluorescent";
+            case CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT:     return "incandescent";
+            case CaptureRequest.CONTROL_AWB_MODE_SHADE:            return "shade";
+            default:                                                return null; // skip unknown/internal modes
+        }
+    }
+
+    /**
      * Sets the zoom level and returns a diagnostic string.
      * Returns null on success; returns a human-readable error message if zoom
      * could not be applied (so the caller can surface it to JS debug panel).
@@ -449,12 +576,42 @@ public class CameraCaptureController extends AbstractVideoCaptureController {
             builder.addTarget(surface);
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
 
+            // ── Zoom ─────────────────────────────────────────────────────────
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoomRatio);
             } else {
                 Rect cropRegion = zoomController.getCropRegion();
                 if (cropRegion != null) {
                     builder.set(CaptureRequest.SCALER_CROP_REGION, cropRegion);
+                }
+            }
+
+            // ── Exposure compensation (only when non-zero) ────────────────────
+            if (exposureCompensation != 0) {
+                try {
+                    builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                            exposureCompensation);
+                } catch (Exception e) {
+                    Log.w(TAG, "exposure compensation not supported: " + e.getMessage());
+                }
+            }
+
+            // ── White balance (only when not AUTO) ────────────────────────────
+            if (whiteBalanceMode != CaptureRequest.CONTROL_AWB_MODE_AUTO) {
+                try {
+                    builder.set(CaptureRequest.CONTROL_AWB_MODE, whiteBalanceMode);
+                } catch (Exception e) {
+                    Log.w(TAG, "white balance mode not supported: " + e.getMessage());
+                }
+            }
+
+            // ── Video stabilization ───────────────────────────────────────────
+            if (stabilizationEnabled) {
+                try {
+                    builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON);
+                } catch (Exception e) {
+                    Log.w(TAG, "video stabilization not supported: " + e.getMessage());
                 }
             }
 

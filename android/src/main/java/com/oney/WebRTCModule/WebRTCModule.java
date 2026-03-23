@@ -966,6 +966,38 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
+    public void mediaStreamTrackSetExposure(String id, int compensation, Promise promise) {
+        ThreadUtils.runOnExecutor(() -> {
+            String diagnostic = getUserMediaImpl.setExposure(id, compensation);
+            promise.resolve(diagnostic);
+        });
+    }
+
+    @ReactMethod
+    public void mediaStreamTrackSetWhiteBalance(String id, String mode, Promise promise) {
+        ThreadUtils.runOnExecutor(() -> {
+            String diagnostic = getUserMediaImpl.setWhiteBalance(id, mode);
+            promise.resolve(diagnostic);
+        });
+    }
+
+    @ReactMethod
+    public void mediaStreamTrackSetStabilization(String id, boolean enabled, Promise promise) {
+        ThreadUtils.runOnExecutor(() -> {
+            String diagnostic = getUserMediaImpl.setStabilization(id, enabled);
+            promise.resolve(diagnostic);
+        });
+    }
+
+    @ReactMethod
+    public void mediaStreamTrackGetCameraCapabilities(String id, Promise promise) {
+        ThreadUtils.runOnExecutor(() -> {
+            com.facebook.react.bridge.WritableMap caps = getUserMediaImpl.getCameraCapabilities(id);
+            promise.resolve(caps);
+        });
+    }
+
+    @ReactMethod
     public void peerConnectionSetConfiguration(ReadableMap configuration, int id) {
         ThreadUtils.runOnExecutor(() -> {
             PeerConnection peerConnection = getPeerConnection(id);

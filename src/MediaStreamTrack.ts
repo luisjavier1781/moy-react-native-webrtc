@@ -172,6 +172,52 @@ export default class MediaStreamTrack extends EventTarget<MediaStreamTrackEventM
     }
 
     /**
+     * Sets the exposure compensation in EV steps (e.g. -2, -1, 0, 1, 2).
+     * Returns null on success or a diagnostic string on failure.
+     */
+    async _setExposure(compensation: number): Promise<string | null> {
+        if (this.remote) throw new Error('Not implemented for remote tracks');
+        if (this.kind !== 'video') throw new Error('Only implemented for video tracks');
+        return WebRTCModule.mediaStreamTrackSetExposure(this.id, compensation);
+    }
+
+    /**
+     * Sets the white balance mode.
+     * @param mode "auto" | "daylight" | "cloudy" | "fluorescent" | "incandescent" | "shade"
+     * Returns null on success or a diagnostic string on failure.
+     */
+    async _setWhiteBalance(mode: string): Promise<string | null> {
+        if (this.remote) throw new Error('Not implemented for remote tracks');
+        if (this.kind !== 'video') throw new Error('Only implemented for video tracks');
+        return WebRTCModule.mediaStreamTrackSetWhiteBalance(this.id, mode);
+    }
+
+    /**
+     * Enables or disables digital video stabilization.
+     * Returns null on success or a diagnostic string on failure.
+     */
+    async _setStabilization(enabled: boolean): Promise<string | null> {
+        if (this.remote) throw new Error('Not implemented for remote tracks');
+        if (this.kind !== 'video') throw new Error('Only implemented for video tracks');
+        return WebRTCModule.mediaStreamTrackSetStabilization(this.id, enabled);
+    }
+
+    /**
+     * Returns camera capabilities: exposure range, available WB modes, stabilization support.
+     * Returns null if capabilities cannot be queried (e.g. camera not open).
+     */
+    async _getCameraCapabilities(): Promise<{
+        exposureMin: number;
+        exposureMax: number;
+        wbModes: string[];
+        hasStabilization: boolean;
+    } | null> {
+        if (this.remote) throw new Error('Not implemented for remote tracks');
+        if (this.kind !== 'video') throw new Error('Only implemented for video tracks');
+        return WebRTCModule.mediaStreamTrackGetCameraCapabilities(this.id);
+    }
+
+    /**
      * Internal function which is used to set the muted state on remote tracks and
      * emit the mute / unmute event.
      *

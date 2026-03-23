@@ -54,6 +54,12 @@ public class ZoomController {
         loadCharacteristics();
     }
 
+    /** Returns the current camera ID (Camera2 ID string), or null if no camera is active. */
+    @Nullable
+    public String getCameraId() {
+        return cameraId;
+    }
+
     /**
      * Returns [minZoom, maxZoom] for the current camera.
      * If no camera is active, returns [1.0, 1.0].
